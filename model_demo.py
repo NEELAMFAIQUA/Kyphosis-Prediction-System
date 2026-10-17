@@ -1,33 +1,65 @@
-"""Synthetic-only classification exercise; it contains no clinical dataset."""
+"""CSV-based Random Forest workflow for a non-clinical teaching exercise."""
 
-from sklearn.datasets import make_classification
-from sklearn.linear_model import LogisticRegression
+from __future__ import annotations
+
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
 from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
 
 
-def evaluate_demo(test_size=0.25, seed=7):
-    if not 0.1 <= test_size <= 0.5:
-        raise ValueError("test_size must be between 0.1 and 0.5")
-    features, labels = make_classification(
-        n_samples=240,
-        n_features=4,
-        n_informative=3,
-        n_redundant=0,
-        class_sep=0.8,
-        random_state=seed,
+def train_kyphosis_model(data: pd.DataFrame, target_column="Kyphosis", seed=7):
+    if target_column not in data.columns:
+        raise ValueError(f"CSV must include target column {target_column!r}")
+    feature_columns = [
+        column for column in data.columns
+        if column != target_column and pd.api.types.is_numeric_dtype(data[column])
+    ]
+    if not feature_columns:
+        raise ValueError("CSV needs numeric predictor columns such as Age, Number, and Start")
+    cleaned = data.dropna(subset=[target_column]).copy()
+    if len(cleaned) < 10:
+        raise ValueError("At least 10 labeled rows are needed for the teaching split")
+    counts = cleaned[target_column].value_counts()
+    if len(counts) < 2 or counts.min() < 2:
+        raise ValueError("Target must have at least two classes with two rows each")
+
+    features = cleaned[feature_columns]
+    target = cleaned[target_column].astype(str)
+    train_x, test_x, train_y, test_y = train_test_split(
+        features, target, test_size=0.25, random_state=seed, stratify=target
     )
-    x_train, x_test, y_train, y_test = train_test_split(
-        features, labels, test_size=test_size, random_state=seed, stratify=labels
+    model = make_pipeline(
+        SimpleImputer(strategy="median"),
+        RandomForestClassifier(
+            n_estimators=250,
+            class_weight="balanced",
+            random_state=seed,
+            min_samples_leaf=2,
+        ),
     )
-    model = make_pipeline(StandardScaler(), LogisticRegression(random_state=seed))
-    model.fit(x_train, y_train)
-    predicted = model.predict(x_test)
+    model.fit(train_x, train_y)
+    predictions = model.predict(test_x)
+    labels = model.named_steps["randomforestclassifier"].classes_.tolist()
     return {
-        "accuracy": float(accuracy_score(y_test, predicted)),
-        "confusion_matrix": confusion_matrix(y_test, predicted).tolist(),
-        "train_size": len(y_train),
-        "test_size": len(y_test),
+        "model": model,
+        "feature_columns": feature_columns,
+        "labels": labels,
+        "accuracy": float(accuracy_score(test_y, predictions)),
+        "confusion_matrix": confusion_matrix(test_y, predictions, labels=labels).tolist(),
+        "row_count": len(cleaned),
+        "test_count": len(test_y),
+        "importance": model.named_steps["randomforestclassifier"].feature_importances_.tolist(),
+    }
+
+
+def predict_case(model, feature_columns, values):
+    if set(feature_columns) - set(values):
+        raise ValueError("Provide a value for every model feature")
+    row = pd.DataFrame([[values[name] for name in feature_columns]], columns=feature_columns)
+    return str(model.predict(row)[0]), {
+        str(label): float(probability)
+        for label, probability in zip(model.classes_, model.predict_proba(row)[0])
     }
